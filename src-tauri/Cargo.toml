@@ -1,0 +1,37 @@
+[package]
+name = "drop-to-text"
+version = "0.1.0"
+edition = "2021"
+description = "Drop an audio file, get text. Local Whisper via Candle."
+
+[lib]
+name = "drop_to_text_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }
+candle-transformers = { version = "0.11", features = ["metal"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+ureq = "2"
+symphonia = { version = "0.5", features = ["all"] }
+rubato = "0.16"
+flate2 = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

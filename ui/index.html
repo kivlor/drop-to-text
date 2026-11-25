@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drop to Text</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --panel: #ffffff;
+    --ink: #1c1d21;
+    --muted: #6d6f78;
+    --line: #e3e1dc;
+    --accent: #c98a12;
+    --accent-soft: #f7ead0;
+    --danger: #b3261e;
+    --ok: #2f7d4a;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171b;
+      --panel: #1f2026;
+      --ink: #ecedf0;
+      --muted: #9a9ca6;
+      --line: #2e3038;
+      --accent: #f2b84b;
+      --accent-soft: #3a3020;
+      --danger: #ff8a80;
+      --ok: #7cd39a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+    -webkit-user-select: none; user-select: none;
+    cursor: default;
+  }
+  header {
+    flex: none;
+    display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+    /* top padding clears the traffic-light row; title + status sit on their own line below */
+    padding: 40px 20px 10px;
+  }
+  header h1 { font-size: 13px; font-weight: 600; margin: 0 auto 0 0; color: var(--muted); letter-spacing: .02em; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); max-width: 60%; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+  .status.loading .dot { animation: pulse 1.2s ease-in-out infinite; }
+  .status.ready .dot { background: var(--ok); }
+  .status.error .dot { background: var(--danger); }
+  .status span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes pulse { 50% { opacity: .3; } }
+
+  main { flex: 1; min-height: 0; padding: 4px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+  #list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  #list:empty { display: none; }
+
+  #drop {
+    flex: none;
+    border: 1.5px dashed var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    padding: 34px 20px;
+    text-align: center;
+    transition: border-color .15s, background .15s, padding .2s;
+    cursor: pointer;
+  }
+  #drop:hover { border-color: var(--muted); }
+  #drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  #drop .big { font-size: 17px; font-weight: 600; }
+  #drop .small { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  #drop svg { width: 34px; height: 34px; color: var(--accent); margin-bottom: 8px; }
+  /* Home: the drop target is the whole window. */
+  body:not(.has-items) #drop {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  body.has-items #drop { padding: 16px 20px; }
+  /* Only shown on the fresh/cleared screen; dropping anywhere on the window still works. */
+  body.has-items #drop { display: none; }
+  body.has-items #drop svg { display: none; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    flex: none;
+    display: flex; flex-direction: column;
+  }
+  /* A lone card fills the window; its transcript scrolls inside it. */
+  .card:only-child { flex: 1 1 auto; min-height: 0; }
+  .card:only-child .text { max-height: none; flex: 1; }
+  .card-head { display: flex; align-items: center; gap: 10px; }
+  .card-head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .card-head .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar.indeterminate i { width: 30%; animation: slide 1.1s ease-in-out infinite; }
+  @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+  .text {
+    margin-top: 10px; white-space: pre-wrap; font-size: 14.5px; line-height: 1.6;
+    max-height: 40vh; min-height: 0; overflow-y: auto; padding-right: 6px;
+    -webkit-user-select: text; user-select: text; cursor: text;
+  }
+  .text:empty { display: none; }
+  .card.working .text { color: var(--muted); }
+  .card.error .text { color: var(--danger); font-size: 13px; }
+  .card.cancelled .meta { color: var(--danger); }
+  .text.paras { white-space: normal; }
+  .para { display: grid; grid-template-columns: 36px 1fr; gap: 10px; margin: 0 0 12px; }
+  .para:last-child { margin-bottom: 0; }
+  .para .ts {
+    color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums;
+    padding-top: 3px; -webkit-user-select: none; user-select: none; text-align: left;
+  }
+  button {
+    font: inherit; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--line); background: transparent; color: var(--ink);
+    padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  }
+  button:hover { background: var(--accent-soft); border-color: var(--accent); }
+  button[hidden] { display: none; }
+</style>
+</head>
+<body>
+<header data-tauri-drag-region>
+  <h1 data-tauri-drag-region>Drop to Text</h1>
+  <div id="status" class="status loading"><i class="dot"></i><span>Starting…</span></div>
+</header>
+<main>
+  <div id="drop">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 15v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3"/></svg>
+    <div class="big">Drop audio files here</div>
+    <div class="small">Voice memos, m4a, mp3, wav, flac, ogg… or click to choose</div>
+  </div>
+  <div id="list"></div>
+</main>
+
+<template id="card-tpl">
+  <div class="card working">
+    <div class="card-head">
+      <div class="name"></div>
+      <div class="meta"></div>
+      <button class="cancel">Cancel</button>
+      <button class="copy" hidden>Copy</button>
+      <button class="new" hidden>Clear</button>
+    </div>
+    <div class="bar indeterminate"><i></i></div>
+    <div class="text"></div>
+  </div>
+</template>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const { getCurrentWebview } = window.__TAURI__.webview;
+
+  const $status = document.getElementById('status');
+  const $drop = document.getElementById('drop');
+  const $list = document.getElementById('list');
+  const tpl = document.getElementById('card-tpl');
+  const cards = new Map();
+  const queue = [];
+  let seq = 0;
+
+  function showStatus(s) {
+    if (!s) return;
+    $status.className = 'status ' + s.state;
+    let msg = s.message;
+    if (s.state === 'loading' && s.progress != null && s.progress < 1) msg += ` (${Math.round(s.progress * 100)}%)`;
+    $status.querySelector('span').textContent = msg;
+    $status.title = s.message;
+  }
+  listen('model-status', e => showStatus(e.payload));
+  invoke('model_status').then(showStatus);
+
+  const fmt = s => {
+    s = Math.round(s);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  };
+
+  const clock = s => {
+    s = Math.floor(s);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, '0');
+    return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+  };
+
+  let active = null; // { id, el, fraction }
+
+  const syncBusy = () => document.body.classList.toggle('busy', !!active || queue.length > 0);
+
+  // Back to the full-window drop target.
+  function goHome() {
+    [...queue].forEach(j => cancelJob(j.id));
+    if (active) cancelJob(active.id);
+    $list.textContent = '';
+    cards.clear();
+    document.body.classList.remove('has-items');
+  }
+
+  function finishCard(el) {
+    el.querySelector('.bar')?.remove();
+    el.querySelector('.cancel').hidden = true;
+    el.querySelector('.new').hidden = false;
+  }
+
+  function setCancelled(el, note) {
+    el.className = 'card cancelled';
+    finishCard(el);
+    el.querySelector('.meta').textContent = note;
+  }
+
+  function cancelJob(id) {
+    const qi = queue.findIndex(j => j.id === id);
+    if (qi >= 0) {
+      queue.splice(qi, 1);
+      setCancelled(cards.get(id), 'Cancelled');
+      syncBusy();
+    } else if (active && active.id === id) {
+      cards.get(id).querySelector('.meta').textContent = 'Cancelling…';
+      invoke('cancel', { id });
+    }
+  }
+
+  // A new drop replaces everything: running/queued jobs are cancelled and old results cleared.
+  function addFiles(paths) {
+    if (!paths.length) return;
+    goHome();
+    paths.forEach(addFile);
+    pump();
+  }
+
+  function addFile(path) {
+    const id = String(++seq);
+    const el = tpl.content.firstElementChild.cloneNode(true);
+    const name = path.split('/').pop();
+    el.querySelector('.name').textContent = name;
+    el.querySelector('.name').title = path;
+    el.querySelector('.meta').textContent = 'Queued';
+    el.querySelector('.cancel').addEventListener('click', goHome); // cancel = back to a fresh start
+    el.querySelector('.new').addEventListener('click', goHome);
+    el.querySelector('.copy').addEventListener('click', ev => {
+      navigator.clipboard.writeText(el.dataset.copy || '');
+      ev.target.textContent = 'Copied';
+      setTimeout(() => (ev.target.textContent = 'Copy'), 1200);
+    });
+    $list.prepend(el);
+    document.body.classList.add('has-items');
+    cards.set(id, el);
+    queue.push({ id, path });
+    syncBusy();
+  }
+
+  function renderParagraphs(el, paragraphs) {
+    const t = el.querySelector('.text');
+    t.textContent = '';
+    t.classList.add('paras');
+    for (const p of paragraphs) {
+      const row = document.createElement('div');
+      row.className = 'para';
+      const ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = clock(p.start);
+      const body = document.createElement('div');
+      body.textContent = p.text;
+      row.append(ts, body);
+      t.append(row);
+    }
+  }
+
+  async function pump() {
+    if (active || !queue.length) return;
+    const { id, path } = queue.shift();
+    const el = cards.get(id);
+    active = { id, el, fraction: 0 };
+    syncBusy();
+    try {
+      const r = await invoke('transcribe', { id, path });
+      finishCard(el);
+      const lang = r.language ? ` · ${r.language}` : '';
+      if (r.cancelled) {
+        setCancelled(el, `Cancelled at ${Math.round(active.fraction * 100)}%`);
+      } else {
+        el.className = 'card done';
+        el.querySelector('.meta').textContent = `${fmt(r.audioSecs)} audio · ${fmt(r.elapsedSecs)}${lang}`;
+      }
+      if (r.paragraphs.length) renderParagraphs(el, r.paragraphs);
+      else if (!r.cancelled) el.querySelector('.text').textContent = '(no speech detected)';
+      el.dataset.copy = r.text;
+      el.querySelector('.copy').hidden = !r.text;
+    } catch (err) {
+      el.className = 'card error';
+      finishCard(el);
+      el.querySelector('.meta').textContent = 'Failed';
+      el.querySelector('.text').textContent = String(err);
+    }
+    active = null;
+    syncBusy();
+    pump();
+  }
+
+  listen('transcribe-progress', e => {
+    const p = e.payload;
+    const el = cards.get(p.id);
+    if (!el || !el.classList.contains('working')) return;
+    if (el.querySelector('.meta').textContent === 'Cancelling…') return;
+    if (active && active.id === p.id) active.fraction = p.fraction;
+    const bar = el.querySelector('.bar');
+    const labels = { decoding: 'Reading audio…', waiting: 'Waiting for model…', transcribing: 'Transcribing…' };
+    el.querySelector('.meta').textContent =
+      p.stage === 'transcribing' && p.fraction > 0 ? `Transcribing… ${Math.round(p.fraction * 100)}%` : labels[p.stage];
+    if (p.stage === 'transcribing' && p.fraction > 0) {
+      bar.classList.remove('indeterminate');
+      bar.querySelector('i').style.width = `${p.fraction * 100}%`;
+    }
+    if (p.text) {
+      const t = el.querySelector('.text');
+      const atBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 40;
+      t.textContent = p.text;
+      if (atBottom) t.scrollTop = t.scrollHeight; // follow live text unless the user scrolled up
+    }
+  });
+
+  getCurrentWebview().onDragDropEvent(e => {
+    const t = e.payload.type;
+    if (t === 'enter' || t === 'over') $drop.classList.add('over');
+    else $drop.classList.remove('over');
+    if (t === 'drop') addFiles(e.payload.paths);
+  });
+
+  $drop.addEventListener('click', async () => {
+    const picked = await window.__TAURI__.dialog.open({
+      multiple: true,
+      filters: [{ name: 'Audio', extensions: ['m4a', 'mp3', 'wav', 'aac', 'aiff', 'aif', 'caf', 'flac', 'ogg', 'oga', 'opus', 'webm', 'mp4', 'mov', 'amr', '3gp', 'wma'] }],
+    });
+    if (!picked) return;
+    addFiles(Array.isArray(picked) ? picked : [picked]);
+  });
+</script>
+</body>
+</html>
