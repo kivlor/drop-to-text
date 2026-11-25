@@ -12,7 +12,8 @@ concurrency:
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
-    # Candle is built with the Metal backend, so this needs macOS.
+    # Candle is built with the Metal backend and build.rs compiles the Swift Parakeet bridge
+    # (FluidAudio), so this needs macOS with Swift 6.1+.
     runs-on: macos-latest
     defaults:
       run:
@@ -23,6 +24,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Swift version
+        run: xcrun swift --version
 
       - uses: Swatinem/rust-cache@v2
         with:

@@ -1,0 +1,3 @@
+[env]
+# FluidAudio (the Parakeet engine) needs macOS 14. Keep in step with tauri.conf.json.
+MACOSX_DEPLOYMENT_TARGET = "14.0"

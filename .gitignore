@@ -18,3 +18,7 @@ src-tauri/gen/schemas/
 # Env / secrets
 .env
 .env.*
+
+# SwiftPM
+src-tauri/swift/.build/
+src-tauri/swift/.swiftpm/
