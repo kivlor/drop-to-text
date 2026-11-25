@@ -13,8 +13,12 @@ fn hf_cache_lookup(repo: &str, file: &str) -> Option<PathBuf> {
     let base = std::env::var_os("HF_HUB_CACHE")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HF_HOME").map(|h| PathBuf::from(h).join("hub")))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/huggingface/hub")))?;
-    let snapshots = base.join(format!("models--{}", repo.replace('/', "--"))).join("snapshots");
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/huggingface/hub"))
+        })?;
+    let snapshots = base
+        .join(format!("models--{}", repo.replace('/', "--")))
+        .join("snapshots");
     fs::read_dir(snapshots)
         .ok()?
         .filter_map(|e| e.ok())
@@ -47,7 +51,10 @@ pub fn fetch(repo: &str, file: &str, status: StatusFn) -> Result<PathBuf> {
     let mut last_err = None;
     for attempt in 0..8 {
         if attempt > 0 {
-            status(format!("Download interrupted, retrying ({attempt}/7)…"), None);
+            status(
+                format!("Download interrupted, retrying ({attempt}/7)…"),
+                None,
+            );
             std::thread::sleep(Duration::from_secs(2u64.pow(attempt.min(4))));
         }
         match download_once(&agent, &url, &part, file, status) {

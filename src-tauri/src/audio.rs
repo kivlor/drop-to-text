@@ -37,7 +37,12 @@ fn decode_symphonia(path: &Path) -> Result<Vec<f32>> {
         hint.with_extension(ext);
     }
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .context("unrecognised container")?;
     let mut format = probed.format;
     let track = format
@@ -87,7 +92,11 @@ fn decode_symphonia(path: &Path) -> Result<Vec<f32>> {
 
 fn find_ffmpeg() -> Option<std::path::PathBuf> {
     // GUI apps on macOS don't inherit the shell PATH, so check the usual spots explicitly.
-    let candidates = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"];
+    let candidates = [
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",
+    ];
     candidates
         .iter()
         .map(std::path::PathBuf::from)
@@ -106,7 +115,16 @@ fn decode_ffmpeg(path: &Path) -> Result<Vec<f32>> {
     let out = Command::new(ffmpeg)
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(path)
-        .args(["-vn", "-ac", "1", "-ar", &TARGET_RATE.to_string(), "-f", "f32le", "-"])
+        .args([
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            &TARGET_RATE.to_string(),
+            "-f",
+            "f32le",
+            "-",
+        ])
         .output()
         .context("running ffmpeg")?;
     if !out.status.success() {
@@ -199,4 +217,85 @@ pub fn mel_filters(n_mels: usize) -> Vec<f32> {
         }
     }
     w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write a mono 16-bit PCM WAV containing a sine wave.
+    fn write_wav(path: &Path, rate: u32, secs: f32, freq: f32) {
+        let n = (rate as f32 * secs) as usize;
+        let data: Vec<u8> = (0..n)
+            .flat_map(|i| {
+                let v = (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin();
+                ((v * 0.5 * i16::MAX as f32) as i16).to_le_bytes()
+            })
+            .collect();
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        std::fs::write(path, wav).unwrap();
+    }
+
+    #[test]
+    fn decodes_and_resamples_wav_to_16k() {
+        let dir = std::env::temp_dir().join(format!("dtt-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tone.wav");
+        write_wav(&path, 44_100, 2.0, 440.0);
+        let pcm = decode_symphonia(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(pcm.len(), 32_000, "2 s at 16 kHz");
+        let peak = pcm.iter().fold(0f32, |m, x| m.max(x.abs()));
+        assert!(
+            (0.4..0.6).contains(&peak),
+            "amplitude preserved, got {peak}"
+        );
+    }
+
+    #[test]
+    fn resample_is_identity_at_target_rate() {
+        let input: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        assert_eq!(resample(&input, TARGET_RATE).unwrap(), input);
+    }
+
+    #[test]
+    fn resample_length_matches_ratio() {
+        let input = vec![0.1f32; 48_000];
+        assert_eq!(resample(&input, 48_000).unwrap().len(), 16_000);
+    }
+
+    #[test]
+    fn rejects_non_audio() {
+        let dir = std::env::temp_dir().join(format!("dtt-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.m4a");
+        std::fs::write(&path, b"definitely not audio").unwrap();
+        assert!(decode_symphonia(&path).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mel_filters_shape_and_normalisation() {
+        let f = mel_filters(128);
+        assert_eq!(f.len(), 128 * 201);
+        assert!(f.iter().all(|&x| x >= 0.0));
+        // Every mel band has some weight; slaney-normalised peaks are small.
+        for band in f.chunks(201) {
+            let max = band.iter().cloned().fold(0f32, f32::max);
+            assert!(max > 0.0 && max < 0.05);
+        }
+    }
 }

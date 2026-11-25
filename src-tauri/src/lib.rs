@@ -1,12 +1,12 @@
 pub mod audio;
 mod download;
-pub mod segment;
 pub mod engine;
+pub mod segment;
 
 use engine::Engine;
 use serde::Serialize;
-use std::path::PathBuf;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -75,7 +75,12 @@ async fn transcribe(
         let emit = |stage, fraction, text: &str| {
             let _ = app.emit(
                 "transcribe-progress",
-                Progress { id: id.clone(), stage, fraction, text: text.to_string() },
+                Progress {
+                    id: id.clone(),
+                    stage,
+                    fraction,
+                    text: text.to_string(),
+                },
             );
         };
         let is_cancelled = || state.cancelled.lock().unwrap().contains(&id);
@@ -101,7 +106,9 @@ async fn transcribe(
             let engine = guard.as_mut().ok_or("The model isn't loaded yet.")?;
             emit("transcribing", 0.0, "");
             let t = engine
-                .transcribe(&pcm, &is_cancelled, &mut |f, text| emit("transcribing", f, text))
+                .transcribe(&pcm, &is_cancelled, &mut |f, text| {
+                    emit("transcribing", f, text)
+                })
                 .map_err(|e| format!("{e:#}"))?;
             Ok(TranscriptOut {
                 text: t.text,
@@ -129,17 +136,35 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut report = |message: String, progress: Option<f32>| {
-                    set_status(&handle, ModelStatus { state: "loading", message, progress });
+                    set_status(
+                        &handle,
+                        ModelStatus {
+                            state: "loading",
+                            message,
+                            progress,
+                        },
+                    );
                 };
                 match Engine::load(&mut report) {
                     Ok(engine) => {
                         let msg = format!("Whisper large-v3-turbo · {}", engine.device_name());
                         *handle.state::<Arc<AppState>>().engine.lock().unwrap() = Some(engine);
-                        set_status(&handle, ModelStatus { state: "ready", message: msg, progress: None });
+                        set_status(
+                            &handle,
+                            ModelStatus {
+                                state: "ready",
+                                message: msg,
+                                progress: None,
+                            },
+                        );
                     }
                     Err(e) => set_status(
                         &handle,
-                        ModelStatus { state: "error", message: format!("{e:#}"), progress: None },
+                        ModelStatus {
+                            state: "error",
+                            message: format!("{e:#}"),
+                            progress: None,
+                        },
                     ),
                 }
             });

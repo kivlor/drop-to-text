@@ -73,19 +73,26 @@ impl Engine {
         status("Loading model into memory…".into(), None);
         let config: Config = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow!("{e}"))?;
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], m::DTYPE, &device)? };
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], m::DTYPE, &device)? };
         let model = Whisper::load(&vb, config.clone())?;
 
         let tok = |s: &str| {
-            tokenizer.token_to_id(s).ok_or_else(|| anyhow!("token {s} missing from tokenizer"))
+            tokenizer
+                .token_to_id(s)
+                .ok_or_else(|| anyhow!("token {s} missing from tokenizer"))
         };
         let sot = tok(m::SOT_TOKEN)?;
         let transcribe = tok(m::TRANSCRIBE_TOKEN)?;
         let translate = tok(m::TRANSLATE_TOKEN)?;
         let eot = tok(m::EOT_TOKEN)?;
         let no_timestamps = tok(m::NO_TIMESTAMPS_TOKEN)?;
-        let no_speech = m::NO_SPEECH_TOKENS.iter().find_map(|t| tokenizer.token_to_id(t));
-        let ts_begin = tokenizer.token_to_id("<|0.00|>").unwrap_or(no_timestamps + 1);
+        let no_speech = m::NO_SPEECH_TOKENS
+            .iter()
+            .find_map(|t| tokenizer.token_to_id(t));
+        let ts_begin = tokenizer
+            .token_to_id("<|0.00|>")
+            .unwrap_or(no_timestamps + 1);
         let lang_tokens: Vec<u32> = (sot + 1..translate).collect();
 
         let vocab = config.vocab_size;
@@ -131,7 +138,11 @@ impl Engine {
     }
 
     pub fn device_name(&self) -> &'static str {
-        if self.device.is_metal() { "Metal GPU" } else { "CPU" }
+        if self.device.is_metal() {
+            "Metal GPU"
+        } else {
+            "CPU"
+        }
     }
 
     /// Transcribe 16 kHz mono PCM. `on_update(fraction_done, text_so_far)`; `cancelled()` is
@@ -156,7 +167,12 @@ impl Engine {
         let mut language: Option<u32> = None;
         let mut segments: Vec<Segment> = Vec::new();
         let mut was_cancelled = false;
-        let joined = |segs: &[Segment]| segs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+        let joined = |segs: &[Segment]| {
+            segs.iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
 
         while seek + 10 < content_frames {
             if cancelled() {
@@ -169,7 +185,10 @@ impl Engine {
                 // Whisper hallucinates ("Thank you.") on silence, and turbo's no-speech
                 // probability is unreliable, so gate on signal energy first.
                 seek += seg_size;
-                on_update((seek as f32 / content_frames as f32).min(1.0), &joined(&segments));
+                on_update(
+                    (seek as f32 / content_frames as f32).min(1.0),
+                    &joined(&segments),
+                );
                 continue;
             }
             let mel_seg = mel.narrow(2, seek, m::N_FRAMES)?.contiguous()?;
@@ -197,18 +216,32 @@ impl Engine {
                 segments.extend(self.timed_segments(&d.tokens[..text_end], offset, window_end)?);
                 seek += advance;
             }
-            on_update((seek as f32 / content_frames as f32).min(1.0), &joined(&segments));
+            on_update(
+                (seek as f32 / content_frames as f32).min(1.0),
+                &joined(&segments),
+            );
         }
 
         let paragraphs = segment::paragraphs(&segments, self.embedder.as_ref());
 
         let language = language.and_then(|l| {
-            self.tokenizer
-                .id_to_token(l)
-                .map(|s| s.trim_start_matches("<|").trim_end_matches("|>").to_string())
+            self.tokenizer.id_to_token(l).map(|s| {
+                s.trim_start_matches("<|")
+                    .trim_end_matches("|>")
+                    .to_string()
+            })
         });
-        let text = paragraphs.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n\n");
-        Ok(Transcript { text, paragraphs, language, cancelled: was_cancelled })
+        let text = paragraphs
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok(Transcript {
+            text,
+            paragraphs,
+            language,
+            cancelled: was_cancelled,
+        })
     }
 
     /// Turn `<|t0|> text <|t1|><|t1|> text <|t2|>` into timed segments (absolute seconds).
@@ -224,7 +257,11 @@ impl Engine {
                 } else {
                     let text = self.decode_text(&buf)?.trim().to_string();
                     if !text.is_empty() {
-                        out.push(Segment { start, end: time, text });
+                        out.push(Segment {
+                            start,
+                            end: time,
+                            text,
+                        });
                     }
                     buf.clear();
                     start = time;
@@ -236,7 +273,11 @@ impl Engine {
         if !buf.is_empty() {
             let text = self.decode_text(&buf)?.trim().to_string();
             if !text.is_empty() {
-                out.push(Segment { start, end: window_end.max(start), text });
+                out.push(Segment {
+                    start,
+                    end: window_end.max(start),
+                    text,
+                });
             }
         }
         Ok(out)
@@ -252,7 +293,11 @@ impl Engine {
         match last_pair {
             Some(i) if !single_ending => {
                 let pos = (s[i - 1] - self.ts_begin) as usize * 2; // 20 ms units -> 10 ms frames
-                let advance = if pos == 0 { seg_size } else { pos.min(seg_size) };
+                let advance = if pos == 0 {
+                    seg_size
+                } else {
+                    pos.min(seg_size)
+                };
                 (i, advance)
             }
             _ => (n, seg_size),
@@ -261,13 +306,21 @@ impl Engine {
 
     fn decode_text(&self, tokens: &[u32]) -> Result<String> {
         let text_tokens: Vec<u32> = tokens.iter().copied().filter(|&t| t < self.eot).collect();
-        self.tokenizer.decode(&text_tokens, true).map_err(|e| anyhow!("{e}"))
+        self.tokenizer
+            .decode(&text_tokens, true)
+            .map_err(|e| anyhow!("{e}"))
     }
 
     fn detect_language(&mut self, features: &Tensor) -> Result<u32> {
         let t = Tensor::new(&[self.sot], &self.device)?.unsqueeze(0)?;
         let ys = self.model.decoder.forward(&t, features, true)?;
-        let logits: Vec<f32> = self.model.decoder.final_linear(&ys.i(..1)?)?.i(0)?.i(0)?.to_vec1()?;
+        let logits: Vec<f32> = self
+            .model
+            .decoder
+            .final_linear(&ys.i(..1)?)?
+            .i(0)?
+            .i(0)?
+            .to_vec1()?;
         self.lang_tokens
             .iter()
             .copied()
@@ -320,13 +373,21 @@ impl Engine {
 
             if i == 0 {
                 if let Some(ns) = self.no_speech {
-                    let l: Vec<f32> =
-                        self.model.decoder.final_linear(&ys.i((..1, ..1))?)?.i(0)?.i(0)?.to_vec1()?;
+                    let l: Vec<f32> = self
+                        .model
+                        .decoder
+                        .final_linear(&ys.i((..1, ..1))?)?
+                        .i(0)?
+                        .i(0)?
+                        .to_vec1()?;
                     no_speech_prob = softmax(&l)[ns as usize] as f64;
                 }
             }
 
-            let logits = self.model.decoder.final_linear(&ys.i((..1, seq_len - 1..))?)?;
+            let logits = self
+                .model
+                .decoder
+                .final_linear(&ys.i((..1, seq_len - 1..))?)?;
             let mut logits: Vec<f32> = logits.i(0)?.i(0)?.to_vec1()?;
             self.apply_rules(&mut logits, &tokens[prompt.len()..]);
 
@@ -388,7 +449,11 @@ impl Engine {
         }
         // Timestamps never go backwards.
         if let Some(&max_ts) = sampled.iter().filter(|&&t| is_ts(t)).max() {
-            let limit = if last_was_ts && !penultimate_was_ts { max_ts } else { max_ts + 1 };
+            let limit = if last_was_ts && !penultimate_was_ts {
+                max_ts
+            } else {
+                max_ts + 1
+            };
             logits[tb..(limit as usize).min(n)].fill(ninf);
         }
         // If timestamps are collectively more likely than any single text token, emit one.
@@ -463,4 +528,42 @@ fn compression_ratio(text: &str) -> f64 {
     let _ = enc.write_all(text.as_bytes());
     let compressed = enc.finish().map(|c| c.len()).unwrap_or(1).max(1);
     text.len() as f64 / compressed as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silence_and_noise_floor_have_no_voice() {
+        assert!(!has_voice(&vec![0.0; 16_000]));
+        let hiss: Vec<f32> = (0..16_000)
+            .map(|i| ((i * 7919) % 13) as f32 * 1e-4)
+            .collect();
+        assert!(!has_voice(&hiss));
+    }
+
+    #[test]
+    fn speech_level_signal_has_voice() {
+        let tone: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.1).sin() * 0.1).collect();
+        assert!(has_voice(&tone));
+    }
+
+    #[test]
+    fn log_softmax_normalises() {
+        let lp = log_softmax(&[1.0, 2.0, 3.0, f32::NEG_INFINITY]);
+        let total: f32 = lp.iter().map(|x| x.exp()).sum();
+        assert!((total - 1.0).abs() < 1e-5);
+        assert_eq!(lp[3], f32::NEG_INFINITY);
+        assert_eq!(argmax(&lp), 2);
+    }
+
+    #[test]
+    fn compression_ratio_flags_repetition() {
+        let normal = "The contractor says the cabinets will arrive next Tuesday.";
+        let looped = "Thank you. ".repeat(40);
+        assert!(compression_ratio(normal) < 2.4);
+        assert!(compression_ratio(&looped) > 2.4);
+        assert_eq!(compression_ratio(""), 0.0);
+    }
 }

@@ -45,18 +45,28 @@ impl Embedder {
         let mut tokenizer = Tokenizer::from_file(tok).map_err(|e| anyhow!("{e}"))?;
         tokenizer.with_padding(Some(PaddingParams::default()));
         tokenizer
-            .with_truncation(Some(TruncationParams { max_length: 256, ..Default::default() }))
+            .with_truncation(Some(TruncationParams {
+                max_length: 256,
+                ..Default::default()
+            }))
             .map_err(|e| anyhow!("{e}"))?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DTYPE, device)? };
         let model = BertModel::load(vb, &config)?;
-        Ok(Self { model, tokenizer, device: device.clone() })
+        Ok(Self {
+            model,
+            tokenizer,
+            device: device.clone(),
+        })
     }
 
     /// L2-normalised mean-pooled sentence embeddings.
     pub fn embed(&self, sentences: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(sentences.len());
         for batch in sentences.chunks(32) {
-            let enc = self.tokenizer.encode_batch(batch.to_vec(), true).map_err(|e| anyhow!("{e}"))?;
+            let enc = self
+                .tokenizer
+                .encode_batch(batch.to_vec(), true)
+                .map_err(|e| anyhow!("{e}"))?;
             let ids: Vec<Tensor> = enc
                 .iter()
                 .map(|e| Tensor::new(e.get_ids(), &self.device))
@@ -85,14 +95,18 @@ impl Embedder {
 /// (times interpolated per character) so sentences spanning a segment boundary stay whole.
 fn sentences(segments: &[Segment]) -> Vec<Segment> {
     let mut chars: Vec<(char, f32)> = Vec::new();
+    let mut prev_end = 0f32;
     for seg in segments {
         let text = seg.text.trim();
         if text.is_empty() {
             continue;
         }
         if !chars.is_empty() {
-            chars.push((' ', seg.start));
+            // The joining space marks the end of the previous segment, so the gap to this
+            // segment's first character shows up as a pause.
+            chars.push((' ', prev_end));
         }
+        prev_end = seg.end;
         let n = text.chars().count().max(1) as f32;
         for (i, c) in text.chars().enumerate() {
             chars.push((c, seg.start + (seg.end - seg.start) * (i as f32 / n)));
@@ -111,7 +125,15 @@ fn sentences(segments: &[Segment]) -> Vec<Segment> {
             let s = s.trim().to_string();
             if !s.is_empty() {
                 let end = chars.get(i + 1).map(|x| x.1).unwrap_or(end_time);
-                out.push(Segment { start: chars[start_idx].1, end, text: s });
+                // Time of the first non-space character, not the joining space before it.
+                let first = (start_idx..=i)
+                    .find(|&j| !chars[j].0.is_whitespace())
+                    .unwrap_or(start_idx);
+                out.push(Segment {
+                    start: chars[first].1,
+                    end,
+                    text: s,
+                });
             }
             start_idx = i + 1;
         }
@@ -187,7 +209,8 @@ pub fn paragraphs(segments: &[Segment], embedder: Option<&Embedder>) -> Vec<Para
 
     let scored: Vec<f32> = score[1..].to_vec();
     let mean_s = scored.iter().sum::<f32>() / scored.len().max(1) as f32;
-    let std_s = (scored.iter().map(|s| (s - mean_s).powi(2)).sum::<f32>() / scored.len().max(1) as f32)
+    let std_s = (scored.iter().map(|s| (s - mean_s).powi(2)).sum::<f32>()
+        / scored.len().max(1) as f32)
         .sqrt();
     let threshold = mean_s + 0.5 * std_s;
 
@@ -220,12 +243,9 @@ pub fn paragraphs(segments: &[Segment], embedder: Option<&Embedder>) -> Vec<Para
         let mut bounds: Vec<usize> = vec![0];
         bounds.extend(breaks.iter().copied());
         bounds.push(n);
-        let long = bounds
-            .windows(2)
-            .map(|w| (w[0], w[1]))
-            .find(|&(a, b)| {
-                chars_between(a, b) > MAX_CHARS && b - a >= 2 && !unsplittable.contains(&(a, b))
-            });
+        let long = bounds.windows(2).map(|w| (w[0], w[1])).find(|&(a, b)| {
+            chars_between(a, b) > MAX_CHARS && b - a >= 2 && !unsplittable.contains(&(a, b))
+        });
         let Some((a, b)) = long else { break };
         let best = (a + 1..b)
             .filter(|&i| chars_between(a, i) >= MIN_CHARS && chars_between(i, b) >= MIN_CHARS)
@@ -248,8 +268,101 @@ pub fn paragraphs(segments: &[Segment], embedder: Option<&Embedder>) -> Vec<Para
         if w[0] >= w[1] {
             continue;
         }
-        let text = sents[w[0]..w[1]].iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-        out.push(Paragraph { start: sents[w[0]].start, text });
+        let text = sents[w[0]..w[1]]
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push(Paragraph {
+            start: sents[w[0]].start,
+            text,
+        });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(start: f32, end: f32, text: &str) -> Segment {
+        Segment {
+            start,
+            end,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn sentences_span_segment_boundaries() {
+        let s = sentences(&[
+            seg(0.0, 2.0, "We should review the"),
+            seg(2.0, 4.0, "forecast on Monday. Then ship it."),
+        ]);
+        let texts: Vec<&str> = s.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["We should review the forecast on Monday.", "Then ship it."]
+        );
+        assert_eq!(s[0].start, 0.0);
+        assert!(s[1].start > 2.0 && s[1].end <= 4.0);
+    }
+
+    #[test]
+    fn tiny_fragments_merge_into_previous_sentence() {
+        let s = sentences(&[seg(
+            0.0,
+            5.0,
+            "That is the main view for the drivers. Yeah. Right.",
+        )]);
+        assert_eq!(s.len(), 1);
+        assert!(s[0].text.ends_with("Yeah. Right."));
+    }
+
+    #[test]
+    fn long_pause_starts_a_new_paragraph() {
+        let a = "This is a fairly long sentence about the kitchen renovation and its budget.";
+        let b = "This is another long sentence that talks about the cabinets and the tile.";
+        let c = "Now a completely separate thought after a long silence about travel plans.";
+        let d = "Flights are booked and the hotel in Kyoto still needs to be reserved soon.";
+        // Each side is three sentences (> MIN_CHARS), separated by a 10 s silence.
+        let p = paragraphs(
+            &[
+                seg(0.0, 5.0, a),
+                seg(5.0, 10.0, b),
+                seg(10.0, 15.0, a),
+                seg(25.0, 30.0, c),
+                seg(30.0, 35.0, d),
+                seg(35.0, 40.0, c),
+            ],
+            None,
+        );
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[1].start, 25.0);
+        assert!(p[1].text.starts_with("Now a completely"));
+    }
+
+    #[test]
+    fn short_transcript_is_one_paragraph() {
+        let p = paragraphs(&[seg(0.0, 3.0, "Pick up milk. Call Sarah.")], None);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].text, "Pick up milk. Call Sarah.");
+    }
+
+    #[test]
+    fn very_long_monologue_is_split() {
+        let sentence = "This sentence keeps going about the same general subject matter. ";
+        let segs: Vec<Segment> = (0..40)
+            .map(|i| seg(i as f32 * 3.0, i as f32 * 3.0 + 3.0, sentence))
+            .collect();
+        let p = paragraphs(&segs, None);
+        assert!(p.len() > 1);
+        assert!(p.iter().all(|p| p.text.len() <= MAX_CHARS + sentence.len()));
+    }
+
+    #[test]
+    fn empty_input() {
+        assert!(paragraphs(&[], None).is_empty());
+        assert!(paragraphs(&[seg(0.0, 1.0, "   ")], None).is_empty());
+    }
 }
